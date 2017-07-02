@@ -78,7 +78,9 @@ int rsa_test();
 int main() {
 	disp_init ();
 
+	int i=0;
 	while (1){
+		printf ("[%d] RSA encryption test!\n", ++i); 
 		rsa_test();
 		//sleep(10);
 		sleep(1);
@@ -91,7 +93,7 @@ int main() {
  
 int rsa_test(){
  
-	char plainText[2048/8] = "Hello this is Ravi"; //key length : 2048
+	char plainText[2048/8] = "Hello World!!"; //key length : 2048
  
 	char publicKey[]="-----BEGIN PUBLIC KEY-----\n"\
 	"MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAy8Dbv8prpJ/0kKhlGeJY\n"\

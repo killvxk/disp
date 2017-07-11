@@ -55,7 +55,7 @@ int main() {
 	disp_init();
 	while (1) {
 		_main();
-		sleep(10);
+		sleep(1);
 	}
 	return 0;
 

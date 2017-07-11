@@ -2,19 +2,27 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <string.h>
+#include <stdint.h>
 #include <pthread.h>
 #include <dlfcn.h>
 #include <stdlib.h>
 #include <sys/mman.h>
 #include <sys/types.h>
 #include <fcntl.h>
+#include <assert.h>
+
 #include "config.h"
 #include "disp.h"
+#include "plthook.h"
+#include <fr.h>
+#include <low.h>
+#include <vlist.h>
 
 //#define FLUSH_MEM
 #define USE_SPINLOCK
 //#define DISP_RANGE		32
 #define DISP_RANGE		2048
+//#define DISP_RANGE		0
 #define DISP_USLEEP		1000000
 
 
@@ -30,6 +38,9 @@ unsigned int text_segment_size=0;
 unsigned long long data_segment_addr=0;
 unsigned int data_segment_size=0;
 
+
+fr_t cl_list=NULL;
+
 /* Forward declare these functions */
 void* __libc_dlopen_mode(const char*, int);
 void* __libc_dlsym(void*, const char*);
@@ -41,6 +52,14 @@ int setup_plt_info(char*);
 FILE* flog=NULL;
 
 extern void* g_lib_base_addr;
+
+// library_hook.c
+void install_library_hook (const char*);
+
+
+void clean_start(int);
+void clean_end(int);
+void clean_memaccess ();
 
 
 void hexdump(const void* data, size_t size) {
@@ -129,13 +148,25 @@ void mem_flush (void* addr, unsigned int size)
 #endif
 }
 
-void disp_hook (int offset) {
+void disp_hook_start (int offset) {
 	int idx=offset/8;
 #if 0
 	disp_test();
 #endif
 	disp_lock_wait();
-	fprintf (flog,"[+] hook():%s=%p\n",plts[idx].name, plt_functions[idx]);
+	clean_start(idx);
+	fprintf (flog,"[+] hook_start():%s=%p\n",plts[idx].name, plt_functions[idx]);
+	return;
+}
+
+void disp_hook_end (int offset) {
+	int idx=offset/8;
+#if 0
+	disp_test();
+#endif
+	disp_lock_wait();
+	clean_end(idx);
+	fprintf (flog,"[+] hook_end():%s=%p\n",plts[idx].name, plt_functions[idx]);
 	return;
 }
 
@@ -210,6 +241,19 @@ void displacement (int disp_offset) {
 
 	disp_unlock();
 
+	if (cl_list)
+		fr_release(cl_list);
+
+	cl_list=fr_prepare();
+	int i;
+	for (i=0; i<text_seg_size/64;i++) 
+		fr_monitor(cl_list,text_addr_d+64*i);
+	fprintf (flog, "[+] displacement(): # of monitored text addrs=%d\n", i);
+
+	for (i=0; i<data_seg_size/64;i++) 
+		fr_monitor(cl_list,data_addr_d+64*i);
+	fprintf (flog, "[+] displacement(): # of monitored data addrs=%d\n", i);
+
 
 #if D_DEBUG==1
 	#if 0
@@ -230,39 +274,92 @@ void displacement (int disp_offset) {
 
 }
 
-void* disp_thread(void* a) {
-#if 1
-		flog = fopen("./inject.log", "w");
-		if (NULL == flog)
-		{
-			perror ("fopen():");
-			flog = stdout;
+
+pthread_mutex_t clean_mutex;
+pthread_cond_t clean_cv;
+
+int volatile resume_flag = 0;
+
+unsigned int clean_count=0;
+
+void* clean_thread() {
+
+	fprintf (flog, "clean_thread() is launched\n");
+
+	while (1) {
+		pthread_mutex_lock (&clean_mutex);
+		pthread_cond_wait (&clean_cv, &clean_mutex);
+		pthread_mutex_unlock (&clean_mutex);
+		//fprintf (flog,"START...\n");
+		while (resume_flag) {
+			clean_count++;
+			clean_memaccess ();
 		}
-		setbuf (flog, NULL);
-#else
-		flog=stdout;
-#endif
+		//fprintf (flog,"END...\n");
+		//sleep(1);		
+	}
 
-		// setup plt info
-		setup_plt_info (library_name);
-		dump_plt_info();
-		
-		disp_mmap();
+}
 
-		printf ("libdisp has been successfully injected\n");
+void clean_init ()
+{
+	pthread_mutex_init (&clean_mutex, NULL);
+	pthread_cond_init (&clean_cv, NULL);
+}
 
-		disp_lock_init();
+void clean_start (int idx)
+{
+	pthread_mutex_lock (&clean_mutex);
+	resume_flag = 1;
+	pthread_cond_signal (&clean_cv);
+	pthread_mutex_unlock (&clean_mutex);
+
+	fprintf (flog,"[+] clea_start():%s(%u)\n",plts[idx].name, clean_count);
+}
+
+void clean_end (int idx)
+{
+	resume_flag = 0;
+
+	fprintf (flog,"[+] clea_end():%s(%u)\n",plts[idx].name, clean_count);
+}
+
+void clean_memaccess ()
+{
+	int l=vl_len(cl_list->vl);
+	for (int i=0; i<l; i++) {
+		memaccess (vl_get(cl_list->vl, i));	
+	}
+
+}
+
+
+void* disp_thread(void* a) {
 	
-		int count=0, disp_offset=0;
-	
-		//displacement();
-    while (1) {
-				disp_offset=64 * ((count++)%DISP_RANGE);
-				displacement (disp_offset);
-        usleep(DISP_USLEEP);
-    }
+	// setup library hook
+	install_library_hook (library_name);
 
-		fclose(flog);
+	// setup plt info
+	setup_plt_info (library_name);
+	dump_plt_info();
+	
+	disp_mmap();
+
+	printf ("libdisp has been successfully injected\n");
+
+	disp_lock_init();
+
+
+	int count=0, disp_offset=0;
+
+	//displacement();
+  while (1) {
+			disp_offset=64 * ((count++)%DISP_RANGE);
+			displacement (disp_offset);
+      usleep(DISP_USLEEP);
+  }
+
+	fclose(flog);
 }
 
 void disp_init() {
@@ -272,15 +369,31 @@ void disp_init() {
 
 __attribute__((constructor))
 void disp_ctor() {
-    /* Note libpthread.so.0. For some reason,
-       using the symbolic link (libpthread.so) will not work */
-    void* pthread_lib = __libc_dlopen_mode("libpthread.so.0", RTLD_LAZY);
-    int(*pthread_lib_create)(void*,void*,void*(*)(void*),void*);
-    pthread_t t;
+#if 1
+	flog = fopen("./inject.log", "w");
+	if (NULL == flog)
+	{
+		perror ("fopen():");
+		flog = stdout;
+	}
+	setbuf (flog, NULL);
+#else
+	flog=stdout;
+#endif
 
-    *(void**)(&pthread_lib_create) = __libc_dlsym(pthread_lib, "pthread_create");
-    pthread_lib_create(&t, NULL, disp_thread, NULL);
+	clean_init();
 
-    __libc_dlclose(pthread_lib);
+
+	/* Note libpthread.so.0. For some reason,
+     using the symbolic link (libpthread.so) will not work */
+  void* pthread_lib = __libc_dlopen_mode("libpthread.so.0", RTLD_LAZY);
+  int(*pthread_lib_create)(void*,void*,void*(*)(void*),void*);
+  pthread_t t;
+
+  *(void**)(&pthread_lib_create) = __libc_dlsym(pthread_lib, "pthread_create");
+  pthread_lib_create(&t, NULL, disp_thread, NULL);
+  pthread_lib_create(&t, NULL, clean_thread, NULL);
+
+  __libc_dlclose(pthread_lib);
 }
 

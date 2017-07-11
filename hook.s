@@ -1,42 +1,80 @@
+.macro save_caller_registers
+	push 	%rax
+	push 	%rcx
+	push 	%rdx
+	push 	%rsi
+	push 	%rdi
+	push 	%r8
+	push 	%r9
+	push 	%r10
+	push 	%r11
+.endm
+
+.macro restore_caller_registers
+	pop		%r11
+	pop		%r10
+	pop		%r9
+	pop		%r8
+	pop		%rdi
+	pop		%rsi
+	pop		%rdx
+	pop		%rcx
+	pop		%rax
+.endm
+
+.macro save_callee_registers
+	push	%rbx
+	push	%rbp
+	push	%r12
+	push	%r13
+	push	%r14
+	push	%r15
+.endm
+
+.macro restore_callee_registers
+	pop		%r15
+	pop		%r14
+	pop		%r13
+	pop		%r12
+	pop		%rbp
+	pop		%rbx
+.endm
+
 .macro define_hook index
+.data
+addr\index: .quad 0
 .section .text
 .global _plt_hook\index
 _plt_hook\index:
-	push   %rbx
-	push   %rcx
-	push   %rdx
-	push   %rbp
-	push   %rsp
-	push   %rsi
-	push   %rdi
-	push   %r8
-	push   %r9
-	push   %r10
-	push   %r11
-	push   %r12
-	push   %r13
-	push   %r14
-	push   %r15
+	save_callee_registers
+
+	save_caller_registers
 	mov		 $\index, %rdi
-	callq  disp_hook@plt
-	pop    %r15
-	pop    %r14
-	pop    %r13
-	pop    %r12
-	pop    %r11
-	pop    %r10
-	pop    %r9
-	pop    %r8
-	pop    %rdi
-	pop    %rsi
-	pop    %rsp
-	pop    %rbp
-	pop    %rdx
-	pop    %rcx
-	pop    %rbx
+	callq  disp_hook_start@plt
+	mov		 addr\index@GOTPCREL(%rip), %rax
+	mov		120(%rsp), %rcx
+	mov		%rcx, 0(%rax)
+	restore_caller_registers
+
+	restore_callee_registers
+
 	mov		 plt_functions@GOTPCREL(%rip),%rax
 	mov    \index(%rax),%rax
-	jmpq   *%rax
+	//jmpq   *%rax
+	
+	add  		$8, %rsp
+	callq	 *%rax
+
+	mov		 addr\index@GOTPCREL(%rip), %r11
+	mov		0(%r11), %r11
+	push 	%r11
+
+	save_caller_registers
+	mov		 $\index, %rdi
+	callq  disp_hook_end@plt
+	restore_caller_registers
+
+	retq
 .endm
 
 # DO NOT DELETE THIS LINE 

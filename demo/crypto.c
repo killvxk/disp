@@ -16,6 +16,7 @@ void main()
     unsigned char decout[10];
 
     AES_KEY wctx;
+		disp_init();
 
 		while (1)
 		{
